@@ -15,6 +15,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 from dataclasses import dataclass
 from joblib import Parallel, delayed
+from joblib.externals.loky import get_reusable_executor
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -108,8 +109,11 @@ class TESAnalyzer:
         
         # Fit GMM with optimal k (GMM needs 2D array)
         X = read_end_sites.reshape(-1, 1)
-        gmm = GaussianMixture(n_components=k_optimal, random_state=self.random_seed)
-        gmm.fit(X)
+        gmm = GaussianMixture(n_components=k_optimal, random_state=self.random_seed,
+                              max_iter=200, n_init=3)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            gmm.fit(X)
         labels = gmm.predict(X)
         
         # Extract significant clusters
@@ -127,7 +131,8 @@ class TESAnalyzer:
             
             for k in range(2, min(self.max_k + 1, n_samples)):
                 try:
-                    gmm = GaussianMixture(n_components=k, random_state=self.random_seed)
+                    gmm = GaussianMixture(n_components=k, random_state=self.random_seed,
+                                         max_iter=200, n_init=3)
                     gmm.fit(X)
                     labels = gmm.predict(X)
                     
@@ -292,7 +297,12 @@ class TESFinder:
                 self.analyzer_params
             ) for transcript_id, end_positions in tqdm(valid_transcripts, desc="TES Analysis")
         )
-        
+
+        # Shut down loky worker pool immediately so the process does not hang
+        # waiting for the default pool reuse timeout (~300 s)
+        if self.n_jobs != 1:
+            get_reusable_executor().shutdown(wait=True)
+
         # Collect results
         apa_results = {}
         n_apa = 0

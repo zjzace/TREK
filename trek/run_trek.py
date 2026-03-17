@@ -106,12 +106,18 @@ class ApaFinderPipeline:
     
     def _gtf_to_bed(self):
         """Convert GTF to BED for minimap2 junction guide"""
-        bed_file = self.output_dir / f"{self.prefix}.junctions.bed"
+        gtf_dir = Path(self.gtf_file).parent
+        gtf_stem = Path(self.gtf_file).stem
+        bed_file = gtf_dir / f"{gtf_stem}.junctions.bed"
         gtf2bed_script = Path(__file__).parent / 'gtf2bed.pl'
         
         if not gtf2bed_script.exists():
             logger.warning("gtf2bed.pl not found - alignment will proceed without junction guide")
             return None
+        
+        if bed_file.exists():
+            logger.info(f"BED file already exists, skipping conversion: {bed_file}")
+            return str(bed_file)
         
         logger.info("Converting GTF to BED")
         with open(bed_file, 'w') as f:
@@ -176,7 +182,7 @@ class ApaFinderPipeline:
         
         with open(results_file, 'w') as f:
             f.write("transcript_id\tgene_id\tgene_name\tchromosome\tstrand\t"
-                   "ID\tsite_position\tsite_count\tsite_abundance\n")
+                   "ID\tsite_position\tsite_count\tsite_abundance\ttranscript_biotype\n")
             
             for transcript_id, apa in apa_results.items():
                 transcript = transcripts.get(transcript_id)
@@ -188,9 +194,9 @@ class ApaFinderPipeline:
                     # Create locus ID: chrom:position:strand
                     locus_id = f"{transcript.chromosome}:{position}:{transcript.strand}"
                     
-                    f.write(f"{transcript_id}\t{transcript.gene_id}\t{transcript.gene_name}\t"
+                    f.write(f"{transcript_id}\t{transcript.ncbi_gene_id}\t{transcript.gene_name}\t"
                            f"{transcript.chromosome}\t{transcript.strand}\t{locus_id}\t"
-                           f"{position}\t{count}\t{abundance:.4f}\n")
+                           f"{position}\t{count}\t{abundance:.4f}\t{transcript.transcript_biotype}\n")
         
         logger.info(f"Saved results: {results_file}")
         

@@ -126,7 +126,9 @@ class AlignmentProcessor:
                          bed_file: str,
                          threads: int = 8) -> Dict[str, List[int]]:
         """
-        Run minimap2 and process alignments on-the-fly
+        Run minimap2 and process alignments on-the-fly.
+        Automatically splits input files into PacBio (filename contains 'pacbio')
+        and Nanopore groups, running a separate minimap2 invocation for each.
         
         Args:
             genome_fasta: Path to genome FASTA
@@ -137,97 +139,39 @@ class AlignmentProcessor:
         Returns:
             Dictionary mapping transcript_id to list of read_end_positions
         """
-        logger.info(f"Running minimap2 alignment with {threads} threads")
+        # Split input files by platform
+        pacbio_files = [f for f in fastq_files if 'pacbio' in f.lower()]
+        nanopore_files = [f for f in fastq_files if 'pacbio' not in f.lower()]
         
-        # Build minimap2 command
-        cmd = [
-            'minimap2', '-ax', 'splice',
-            '-t', str(threads),
-            '-u', 'f',
-            '-k', '14',
-            '-G', '500000',
-            '--secondary=no'
-        ]
+        logger.info(f"Input files — Nanopore: {len(nanopore_files)}, PacBio: {len(pacbio_files)}")
         
-        # Add junctions from BED if provided
-        if bed_file:
-            cmd.extend(['--junc-bed', bed_file])
-            logger.info(f"Using junction guide from: {bed_file}")
+        transcript_reads: Dict[str, list] = defaultdict(list)
         
-        # Add reference and input files
-        cmd.append(genome_fasta)
-        cmd.extend(fastq_files)
+        if nanopore_files:
+            logger.info(f"Running minimap2 for Nanopore reads ({len(nanopore_files)} file(s))")
+            self._run_minimap2(
+                genome_fasta=genome_fasta,
+                fastq_files=nanopore_files,
+                bed_file=bed_file,
+                threads=threads,
+                preset='splice',
+                extra_args=['-u', 'f', '-k', '14', '-G', '500000'],
+                desc="Processing Nanopore reads",
+                transcript_reads=transcript_reads,
+            )
         
-        logger.info(f"Command: {' '.join(cmd)}")
-        logger.info("Processing alignments on-the-fly...")
-        
-        # Run minimap2 and process SAM output directly
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False  # Binary mode for pysam
-        )
-        
-        transcript_reads = defaultdict(list)
-        
-        # Process SAM output on-the-fly
-        with pysam.AlignmentFile(process.stdout, 'r') as sam:
-            for read in tqdm(sam, desc="Processing reads"):
-                # Filter by mapping quality
-                if read.mapping_quality < self.min_mapq:
-                    self.stats['low_mapq'] += 1
-                    continue
-                
-                # Skip unmapped, secondary, supplementary
-                if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    self.stats['filtered_alignments'] += 1
-                    continue
-                
-                self.stats['total_reads_processed'] += 1
-                
-                # Create AlignedRead object
-                aligned_read = AlignedRead(
-                    read_id=read.query_name,
-                    chromosome=read.reference_name,
-                    start=read.reference_start,  # 0-based
-                    end=read.reference_end,      # 0-based
-                    strand='-' if read.is_reverse else '+',
-                    cigar=read.cigarstring,
-                    mapq=read.mapping_quality
-                )
-                
-                # Filter reads with large soft/hard clips
-                # if aligned_read.has_large_clips():
-                #     self.stats['large_clips_filtered'] += 1
-                #     continue
-                
-                # Try to assign read to transcript(s)
-                assigned_transcript = self._assign_read(aligned_read)
-                
-                if not assigned_transcript:
-                    self.stats['unassigned_reads'] += 1
-                    continue
-                
-                # Determine read end position based on strand (convert to 1-based)
-                # For polyA detection, we want the 3' end
-                if aligned_read.strand == '+':
-                    # 3' end is rightmost position
-                    # pysam reference_end is already 1-based coordinate after last base
-                    read_end = aligned_read.end
-                else:
-                    # 3' end is leftmost position
-                    # Convert 0-based start to 1-based
-                    read_end = aligned_read.start + 1
-                
-                # Save read end for each assigned transcript
-                transcript_reads[assigned_transcript].append(read_end)
-                self.stats['assigned_reads'] += 1
-        
-        # Wait for minimap2 to finish
-        _, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"minimap2 failed: {stderr.decode()}")
+        if pacbio_files:
+            logger.info(f"Running minimap2 for PacBio reads ({len(pacbio_files)} file(s))")
+            self._run_minimap2(
+                genome_fasta=genome_fasta,
+                fastq_files=pacbio_files,
+                bed_file=bed_file,
+                threads=threads,
+                preset='splice:hq',
+                extra_args=['-u', 'f', '-G', '500000'],
+                desc="Processing PacBio reads",
+                transcript_reads=transcript_reads,
+            )
         
         self._log_stats()
         logger.info(f"Assigned reads to {len(transcript_reads)} transcripts")
@@ -240,7 +184,96 @@ class AlignmentProcessor:
         }
         
         return sorted_transcript_reads
-    
+
+    def _run_minimap2(self,
+                      genome_fasta: str,
+                      fastq_files: List[str],
+                      bed_file: str,
+                      threads: int,
+                      preset: str,
+                      extra_args: List[str],
+                      desc: str,
+                      transcript_reads: Dict) -> None:
+        """
+        Run a single minimap2 invocation and process SAM output on-the-fly,
+        accumulating results into the shared transcript_reads dict.
+        
+        Args:
+            genome_fasta: Path to genome FASTA
+            fastq_files: FASTQ files to align
+            bed_file: BED junction guide file (may be empty string / None)
+            threads: Number of threads for minimap2
+            preset: minimap2 preset string (e.g. 'splice' or 'splice:hq')
+            extra_args: Additional minimap2 flags inserted before reference/query
+            desc: Label for the tqdm progress bar
+            transcript_reads: Shared dict that results are written into
+        """
+        cmd = ['minimap2', '-ax', preset, '-t', str(threads)] + extra_args + ['--secondary=no']
+        
+        if bed_file:
+            cmd.extend(['--junc-bed', bed_file])
+            logger.info(f"Using junction guide from: {bed_file}")
+        
+        cmd.append(genome_fasta)
+        cmd.extend(fastq_files)
+        
+        logger.info(f"Command: {' '.join(cmd)}")
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,  # Binary mode for pysam
+        )
+        
+        with pysam.AlignmentFile(process.stdout, 'r') as sam:
+            for read in tqdm(sam, desc=desc):
+                # Filter by mapping quality
+                if read.mapping_quality < self.min_mapq:
+                    self.stats['low_mapq'] += 1
+                    continue
+                
+                # Skip unmapped, secondary, supplementary
+                if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                    self.stats['filtered_alignments'] += 1
+                    continue
+                
+                self.stats['total_reads_processed'] += 1
+                
+                aligned_read = AlignedRead(
+                    read_id=read.query_name,
+                    chromosome=read.reference_name,
+                    start=read.reference_start,  # 0-based
+                    end=read.reference_end,       # 0-based
+                    strand='-' if read.is_reverse else '+',
+                    cigar=read.cigarstring,
+                    mapq=read.mapping_quality,
+                )
+                
+                # Filter reads with large soft/hard clips
+                # if aligned_read.has_large_clips():
+                #     self.stats['large_clips_filtered'] += 1
+                #     continue
+                
+                assigned_transcript = self._assign_read(aligned_read)
+                
+                if not assigned_transcript:
+                    self.stats['unassigned_reads'] += 1
+                    continue
+                
+                # Determine 3' end position (1-based) based on strand
+                if aligned_read.strand == '+':
+                    read_end = aligned_read.end
+                else:
+                    read_end = aligned_read.start + 1
+                
+                transcript_reads[assigned_transcript].append(read_end)
+                self.stats['assigned_reads'] += 1
+        
+        _, stderr = process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(f"minimap2 failed: {stderr.decode()}")
+
     def _assign_read(self, read: AlignedRead) -> Optional[str]:
         """
         Assign a single read to transcript(s)

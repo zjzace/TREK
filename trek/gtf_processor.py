@@ -27,11 +27,12 @@ class Exon:
 class Transcript:
     """Represents a transcript with exon structure"""
     transcript_id: str
-    gene_id: str
     gene_name: str
     chromosome: str
     strand: str
     exons: List[Exon]
+    ncbi_gene_id: str = ''
+    transcript_biotype: str = ''
     
     def __post_init__(self):
         # Sort exons by genomic position
@@ -120,11 +121,14 @@ class GTFProcessor:
                     
                     # Handle transcript/mRNA features
                     if feature_type in {'transcript', 'mRNA'}:
+                        attrs = parsed['attributes']
                         transcript_metadata[transcript_id] = {
                             'chromosome': parsed['seqname'],
                             'strand': parsed['strand'],
-                            'gene_id': parsed['attributes'].get('gene_id', ''),
-                            'gene_name': parsed['attributes'].get('gene_name', ''),
+                            # fall back to gene_id attribute when gene_name is absent (new GTF format)
+                            'gene_name': attrs.get('gene_name') or attrs.get('gene_id', ''),
+                            'ncbi_gene_id': attrs.get('ncbi_gene_id', ''),
+                            'transcript_biotype': attrs.get('transcript_biotype', ''),
                         }
                         self.stats['transcripts_found'] += 1
                     
@@ -135,11 +139,13 @@ class GTFProcessor:
                         
                         # Extract metadata from exon if transcript not seen
                         if transcript_id not in transcript_metadata:
+                            attrs = parsed['attributes']
                             transcript_metadata[transcript_id] = {
                                 'chromosome': parsed['seqname'],
                                 'strand': parsed['strand'],
-                                'gene_id': parsed['attributes'].get('gene_id', ''),
-                                'gene_name': parsed['attributes'].get('gene_name', ''),
+                                'gene_name': attrs.get('gene_name') or attrs.get('gene_id', ''),
+                                'ncbi_gene_id': attrs.get('ncbi_gene_id', ''),
+                                'transcript_biotype': attrs.get('transcript_biotype', ''),
                             }
                 
                 except Exception as e:
@@ -158,11 +164,12 @@ class GTFProcessor:
             try:
                 transcript = Transcript(
                     transcript_id=transcript_id,
-                    gene_id=metadata['gene_id'],
                     gene_name=metadata['gene_name'],
                     chromosome=metadata['chromosome'],
                     strand=metadata['strand'],
-                    exons=exons
+                    exons=exons,
+                    ncbi_gene_id=metadata.get('ncbi_gene_id', ''),
+                    transcript_biotype=metadata.get('transcript_biotype', ''),
                 )
                 transcripts[transcript_id] = transcript
                 self.stats['valid_transcripts'] += 1
@@ -194,7 +201,14 @@ class GTFProcessor:
             
             if ' "' in attr and attr.endswith('"'):
                 key, value = attr.split(' "', 1)
-                attributes[key.strip()] = value.rstrip('"')
+                key = key.strip()
+                value = value.rstrip('"')
+                # db_xref appears multiple times; capture the GeneID entry specifically
+                if key == 'db_xref':
+                    if value.startswith('GeneID:'):
+                        attributes['ncbi_gene_id'] = value[len('GeneID:'):]
+                else:
+                    attributes[key] = value
         
         return {
             'seqname': fields[0],
