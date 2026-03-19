@@ -140,8 +140,8 @@ class AlignmentProcessor:
             Dictionary mapping transcript_id to list of read_end_positions
         """
         # Split input files by platform
-        pacbio_files = [f for f in fastq_files if 'pacbio' in f.lower()]
-        nanopore_files = [f for f in fastq_files if 'pacbio' not in f.lower()]
+        pacbio_files = [f for f in fastq_files if 'pacbio' in f.lower() or 'subread' in f.lower()]
+        nanopore_files = [f for f in fastq_files if 'pacbio' not in f.lower() and 'subread' not in f.lower()]
         
         logger.info(f"Input files — Nanopore: {len(nanopore_files)}, PacBio: {len(pacbio_files)}")
         

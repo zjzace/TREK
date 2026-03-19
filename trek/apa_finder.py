@@ -53,6 +53,7 @@ class TESAnalyzer:
                  min_distance: int = 50,
                  min_relative_dominance: float = 0.1,
                  min_sharpness: float = 0.5,
+                 max_subsample: int = 50_000,
                  random_seed: int = 42):
         """
         Initialize TES analyzer
@@ -63,6 +64,8 @@ class TESAnalyzer:
             min_distance: Minimum distance between TES peaks (bp)
             min_relative_dominance: Minimum relative size for alternative TES
             min_sharpness: Minimum sharpness score for peaks
+            max_subsample: Maximum reads used for GMM fitting and k selection;
+                           all reads are still used for final cluster assignment
             random_seed: Random seed for reproducibility
         """
         self.min_cluster_size = min_cluster_size
@@ -70,6 +73,7 @@ class TESAnalyzer:
         self.min_distance = min_distance
         self.min_relative_dominance = min_relative_dominance
         self.min_sharpness = min_sharpness
+        self.max_subsample = max_subsample
         self.random_seed = random_seed
     
     def find_tes_peaks(self, read_end_sites: np.ndarray) -> List[Tuple[int, int]]:
@@ -89,66 +93,86 @@ class TESAnalyzer:
         # This ensures GMM receives data in consistent order regardless of
         # how reads were collected or processed
         read_end_sites = np.sort(read_end_sites)
-        
-        return self._find_peaks_single(read_end_sites)
+
+        # Subsample for GMM fitting / silhouette scoring when n is very large.
+        # All reads are still used for final cluster assignment and counting.
+        if len(read_end_sites) > self.max_subsample:
+            rng = np.random.default_rng(self.random_seed)
+            idx = np.sort(rng.choice(len(read_end_sites), size=self.max_subsample, replace=False))
+            sub_sites = read_end_sites[idx]
+        else:
+            sub_sites = read_end_sites
+
+        return self._find_peaks_single(read_end_sites, sub_sites)
     
-    def _find_peaks_single(self, read_end_sites: np.ndarray) -> List[Tuple[int, int]]:
+    def _find_peaks_single(self, read_end_sites: np.ndarray, sub_sites: np.ndarray) -> List[Tuple[int, int]]:
         """
-        Single-pass GMM peak detection
+        Single-pass GMM peak detection.
+
+        Args:
+            read_end_sites: Full sorted array of read end positions (used for
+                            final cluster assignment, counts, and sharpness).
+            sub_sites: Subsample of read_end_sites (or identical to it when
+                       n <= max_subsample) used for GMM fitting and silhouette
+                       scoring to keep runtime bounded.
         """
-        # Find optimal number of clusters
-        k_optimal = self._find_optimal_k(read_end_sites)
-        
+        # Find optimal number of clusters using the (possibly subsampled) data.
+        # Returns the already-fitted best GMM to avoid a second fit.
+        k_optimal, best_gmm = self._find_optimal_k(sub_sites)
+
         if k_optimal == 1:
-            # Single cluster - return mode
+            # Single cluster - return mode from full data
             # Handle ties deterministically by choosing smallest position
             position_counts = Counter(read_end_sites)
             max_count = max(position_counts.values())
             mode_pos = min([pos for pos, cnt in position_counts.items() if cnt == max_count])
             return [(mode_pos, max_count)]
-        
-        # Fit GMM with optimal k (GMM needs 2D array)
-        X = read_end_sites.reshape(-1, 1)
-        gmm = GaussianMixture(n_components=k_optimal, random_state=self.random_seed,
-                              max_iter=200, n_init=3)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
-            gmm.fit(X)
-        labels = gmm.predict(X)
-        
-        # Extract significant clusters
+
+        # Reuse the GMM fitted during k selection; predict on all reads for accurate counts
+        X_full = read_end_sites.reshape(-1, 1)
+        labels = best_gmm.predict(X_full)
+
+        # Extract significant clusters using full read set for true counts
         return self._extract_peaks(read_end_sites, labels)
     
-    def _find_optimal_k(self, read_end_sites: np.ndarray) -> int:
-        """Find optimal number of clusters using silhouette score"""
+    def _find_optimal_k(self, read_end_sites: np.ndarray) -> Tuple[int, object]:
+        """Find optimal number of clusters using silhouette score.
+
+        Returns:
+            (k_optimal, best_gmm): the best k and its already-fitted GMM,
+            so the caller can call predict() without refitting.
+            Returns (1, None) when a single cluster is optimal.
+        """
         max_sil = -1
         k_optimal = 1
+        best_gmm = None
         n_samples = len(read_end_sites)
         X = read_end_sites.reshape(-1, 1)
-        
+
         with warnings.catch_warnings(record=True):
             warnings.filterwarnings("ignore")
-            
+
             for k in range(2, min(self.max_k + 1, n_samples)):
                 try:
                     gmm = GaussianMixture(n_components=k, random_state=self.random_seed,
                                          max_iter=200, n_init=3)
                     gmm.fit(X)
                     labels = gmm.predict(X)
-                    
+
                     if len(np.unique(labels)) < 2:
                         continue
-                    
+
                     sil_score = silhouette_score(X, labels, metric='euclidean')
-                    
+
                     if sil_score > max_sil:
                         max_sil = sil_score
                         k_optimal = k
-                
+                        best_gmm = gmm
+
                 except Exception:
                     break
-        
-        return k_optimal
+
+        return k_optimal, best_gmm
     
     def _is_peak_sharp(self, position: int, read_end_sites: np.ndarray) -> bool:
         """Check if peak is sharp using IQR method"""
@@ -229,6 +253,7 @@ class TESFinder:
                  min_distance: int = 50,
                  min_relative_dominance: float = 0.1,
                  min_sharpness: float = 0.5,
+                 max_subsample: int = 50_000,
                  n_jobs: int = -1,
                  random_seed: int = 42):
         """
@@ -241,6 +266,8 @@ class TESFinder:
             min_distance: Minimum distance between peaks (bp)
             min_relative_dominance: Minimum relative size for alternative site
             min_sharpness: Minimum peak sharpness
+            max_subsample: Maximum reads used for GMM fitting and k selection
+                           (all reads still used for final assignment)
             n_jobs: Number of parallel jobs (-1 for all CPUs, 1 for serial/reproducible)
             random_seed: Random seed for reproducibility
         """
@@ -254,6 +281,7 @@ class TESFinder:
             'min_distance': min_distance,
             'min_relative_dominance': min_relative_dominance,
             'min_sharpness': min_sharpness,
+            'max_subsample': max_subsample,
             'random_seed': random_seed
         }
         
@@ -290,13 +318,19 @@ class TESFinder:
             logger.info("Running in sequential mode for full reproducibility")
         
         # Process in parallel (or sequentially if n_jobs=1)
-        results = Parallel(n_jobs=self.n_jobs, backend=backend)(
-            delayed(self._process_transcript)(
-                transcript_id,
-                end_positions,
-                self.analyzer_params
-            ) for transcript_id, end_positions in tqdm(valid_transcripts, desc="TES Analysis")
-        )
+        # Wrap results (not inputs) with tqdm so the progress bar reflects
+        # actual task *completions*, not just task submissions to the worker pool.
+        results = list(tqdm(
+            Parallel(n_jobs=self.n_jobs, backend=backend, return_as='generator')(
+                delayed(self._process_transcript)(
+                    transcript_id,
+                    end_positions,
+                    self.analyzer_params
+                ) for transcript_id, end_positions in valid_transcripts
+            ),
+            total=len(valid_transcripts),
+            desc="TES Analysis"
+        ))
 
         # Shut down loky worker pool immediately so the process does not hang
         # waiting for the default pool reuse timeout (~300 s)
