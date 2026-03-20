@@ -70,12 +70,18 @@ class ApaFinderPipeline:
         try:
             logger.info("STEP 1: Processing GTF annotation")
             transcripts, multi_exon_dict, single_exon_dict = self._process_gtf()
-            
-            logger.info("STEP 2: Converting GTF to BED for alignment guide")
-            bed_file = self._gtf_to_bed()
-            
-            logger.info("STEP 3: Running alignment and assigning reads to transcripts")
-            transcript_reads = self._process_alignment(bed_file, multi_exon_dict, single_exon_dict)
+
+            assignment_file = self.output_dir / f"{self.prefix}.read_assignments.pkl"
+            transcript_reads = self._load_assignments_if_valid(assignment_file)
+
+            if transcript_reads is not None:
+                logger.info(f"Found intact assignment file, skipping alignment (Steps 2-3): {assignment_file}")
+            else:
+                logger.info("STEP 2: Converting GTF to BED for alignment guide")
+                bed_file = self._gtf_to_bed()
+
+                logger.info("STEP 3: Running alignment and assigning reads to transcripts")
+                transcript_reads = self._process_alignment(bed_file, multi_exon_dict, single_exon_dict)
             
             logger.info("STEP 4: Identifying alternative polyA sites")
             apa_results = self._find_apa_sites(transcript_reads)
@@ -92,6 +98,19 @@ class ApaFinderPipeline:
             logger.error(f"Pipeline failed: {e}", exc_info=True)
             raise
     
+    def _load_assignments_if_valid(self, assignment_file):
+        """Return loaded transcript_reads if the pickle file exists and is readable, else None."""
+        if not assignment_file.exists():
+            return None
+        try:
+            with open(assignment_file, 'rb') as f:
+                data = pickle.load(f)
+            logger.info(f"Loaded {len(data)} transcript assignments from cache")
+            return data
+        except Exception as e:
+            logger.warning(f"Assignment file exists but could not be loaded ({e}), re-running alignment")
+            return None
+
     def _process_gtf(self):
         """Process GTF file"""
         logger.info(f"Processing GTF: {self.gtf_file}")

@@ -3,99 +3,49 @@
 Alignment Processor: Handle minimap2 alignment and read-to-transcript assignment
 """
 
-import re
 import subprocess
 import logging
 import pysam
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
-from dataclasses import dataclass
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AlignedRead:
-    """Represents an aligned read with assignment info"""
-    read_id: str
-    chromosome: str
-    start: int  # 0-based
-    end: int    # 0-based
-    strand: str
-    cigar: str
-    mapq: int
+# pysam CIGAR operation codes
+_OP_M = 0   # Match/mismatch
+_OP_D = 2   # Deletion
+_OP_N = 3   # Intron (splice junction)
+_OP_EQ = 7  # Sequence match
+_OP_X = 8   # Sequence mismatch
+
+
+def _extract_junctions(cigartuples, ref_start: int) -> Optional[Tuple[int, ...]]:
+    """
+    Extract splice junctions from pysam cigartuples.
     
-    def has_large_clips(self, max_clip_size: int = 20) -> bool:
-        """
-        Check if read has large soft/hard clips at either end
+    Args:
+        cigartuples: List of (op, length) from pysam
+        ref_start: 0-based reference start
         
-        Args:
-            max_clip_size: Maximum allowed clip size
-            
-        Returns:
-            True if clips exceed max_clip_size
-        """
-        cigar_pattern = re.compile(r'(\d+)([MIDNSHP=X])')
-        operations = cigar_pattern.findall(self.cigar)
-        
-        if not operations:
-            return False
-        
-        # Check 5' end (first operation)
-        first_len, first_op = int(operations[0][0]), operations[0][1]
-        if first_op in ['S', 'H'] and first_len > max_clip_size:
-            return True
-        
-        # Check 3' end (last operation)
-        last_len, last_op = int(operations[-1][0]), operations[-1][1]
-        if last_op in ['S', 'H'] and last_len > max_clip_size:
-            return True
-        
-        return False
-    
-    def get_splice_junctions(self) -> Optional[Tuple[int, ...]]:
-        """
-        Extract splice junctions from CIGAR string
-        Returns tuple of junction coordinates or None for single-block reads
-        """
-        # Parse CIGAR to get block structure
-        cigar_pattern = re.compile(r'(\d+)([MIDNSHP=X])')
-        operations = cigar_pattern.findall(self.cigar)
-        
-        if not operations:
-            return None
-        
-        # Track genomic position and find splice junctions (N operations)
-        junctions = []
-        current_pos = self.start  # 0-based
-        has_intron = False
-        
-        for length, op in operations:
-            length = int(length)
-            
-            if op == 'M' or op == '=' or op == 'X':  # Match/mismatch
-                current_pos += length
-            elif op == 'N':  # Intron (splice junction)
-                # Junction coordinates: last base of previous exon, first base of next exon
-                # current_pos is 0-based position after last exon base
-                # In 1-based: last exon base = current_pos (0-based end = 1-based last position)
-                junctions.append(current_pos)      # Donor: last base of exon (1-based)
-                current_pos += length
-                # current_pos is now 0-based position of first base of next exon
-                # In 1-based: first exon base = current_pos + 1
-                junctions.append(current_pos + 1)  # Acceptor: first base of exon (1-based)
-                has_intron = True
-            elif op == 'D':  # Deletion
-                current_pos += length
-            elif op in ['I', 'S', 'H', 'P']:  # Insertion, soft/hard clip, padding
-                pass  # Don't advance genomic position
-        
-        if not has_intron:
-            return None
-        
-        return tuple(junctions)
-    
+    Returns:
+        Tuple of junction coordinates (1-based) or None for single-block reads
+    """
+    junctions = []
+    pos = ref_start  # 0-based
+    for op, length in cigartuples:
+        if op == _OP_M or op == _OP_EQ or op == _OP_X:
+            pos += length
+        elif op == _OP_N:
+            junctions.append(pos)          # Donor: 0-based end = 1-based last position
+            pos += length
+            junctions.append(pos + 1)      # Acceptor: 1-based first position
+        elif op == _OP_D:
+            pos += length
+        # I(1), S(4), H(5), P(6) don't advance reference position
+    return tuple(junctions) if junctions else None
+
 
 class AlignmentProcessor:
     """Process alignments and assign reads to transcripts"""
@@ -155,7 +105,7 @@ class AlignmentProcessor:
                 bed_file=bed_file,
                 threads=threads,
                 preset='splice',
-                extra_args=['-u', 'f', '-k', '14', '-G', '500000'],
+                extra_args=['-u', 'b', '-k', '14', '-G', '500000'],
                 desc="Processing Nanopore reads",
                 transcript_reads=transcript_reads,
             )
@@ -240,32 +190,25 @@ class AlignmentProcessor:
                 
                 self.stats['total_reads_processed'] += 1
                 
-                aligned_read = AlignedRead(
-                    read_id=read.query_name,
-                    chromosome=read.reference_name,
-                    start=read.reference_start,  # 0-based
-                    end=read.reference_end,       # 0-based
-                    strand='-' if read.is_reverse else '+',
-                    cigar=read.cigarstring,
-                    mapq=read.mapping_quality,
-                )
+                chrom = read.reference_name
+                ref_start = read.reference_start   # 0-based
+                ref_end = read.reference_end         # 0-based
+                strand = '-' if read.is_reverse else '+'
                 
-                # Filter reads with large soft/hard clips
-                # if aligned_read.has_large_clips():
-                #     self.stats['large_clips_filtered'] += 1
-                #     continue
+                junctions = _extract_junctions(read.cigartuples, ref_start)
+                assigned = self._assign_read(chrom, strand, ref_start, ref_end, junctions)
                 
-                assigned_transcript = self._assign_read(aligned_read)
-                
-                if not assigned_transcript:
+                if not assigned:
                     self.stats['unassigned_reads'] += 1
                     continue
                 
-                # Determine 3' end position (1-based) based on strand
-                if aligned_read.strand == '+':
-                    read_end = aligned_read.end
+                assigned_transcript, transcript_strand = assigned
+                
+                # Determine 3' end position (1-based) based on transcript strand
+                if transcript_strand == '+':
+                    read_end = ref_end
                 else:
-                    read_end = aligned_read.start + 1
+                    read_end = ref_start + 1
                 
                 transcript_reads[assigned_transcript].append(read_end)
                 self.stats['assigned_reads'] += 1
@@ -274,40 +217,43 @@ class AlignmentProcessor:
         if process.returncode != 0:
             raise RuntimeError(f"minimap2 failed: {stderr.decode()}")
 
-    def _assign_read(self, read: AlignedRead) -> Optional[str]:
+    def _assign_read(self, chrom: str, strand: str,
+                     ref_start: int, ref_end: int,
+                     junctions: Optional[Tuple[int, ...]]) -> Optional[Tuple[str, str]]:
         """
-        Assign a single read to transcript(s)
+        Assign a single read to a transcript
+        
+        Args:
+            chrom: Chromosome name
+            strand: Read strand ('+' or '-')
+            ref_start: 0-based reference start
+            ref_end: 0-based reference end
+            junctions: Splice junction tuple from _extract_junctions, or None
         
         Returns:
-            List of assigned transcript IDs
+            Tuple of (transcript_id, transcript_strand), or None if unassigned
         """
-        chrom_strand_key = (read.chromosome, read.strand)
-        
-        # Try multi-exon assignment first
-        junctions = read.get_splice_junctions()
-        
         if junctions:
-            # Multi-exon read - match based on splice pattern
-            if chrom_strand_key in self.multi_exon_dict:
-                chrom_strand_multi_exon_dict = self.multi_exon_dict[chrom_strand_key]
-                
-                if junctions in chrom_strand_multi_exon_dict:
-                    # Single value: (transcript_id, tx_start, tx_end)
-                    transcript_id, tx_start, tx_end = chrom_strand_multi_exon_dict[junctions]
+            # Multi-exon read - match based on splice pattern (strand-agnostic)
+            chrom_multi_exon_dict = self.multi_exon_dict.get(chrom)
+            if chrom_multi_exon_dict:
+                match = chrom_multi_exon_dict.get(junctions)
+                if match:
+                    transcript_id, tx_start, tx_end, tx_strand = match
                     self.stats['multi_exon_assigned'] += 1
-                    return transcript_id
+                    return transcript_id, tx_strand
                 else:
                     self.stats['multi_exon_no_match'] += 1
             else:
                 self.stats['multi_exon_no_match'] += 1
         else:
             # Single-exon read - use InterLap for overlap-based assignment
-            if chrom_strand_key in self.single_exon_dict:
-                interlap = self.single_exon_dict[chrom_strand_key]
-                
+            chrom_strand_key = (chrom, strand)
+            interlap = self.single_exon_dict.get(chrom_strand_key)
+            if interlap:
                 # Query interval (convert to 1-based)
-                read_start = read.start + 1
-                read_end = read.end
+                read_start = ref_start + 1
+                read_end = ref_end
                 
                 # Find overlapping intervals
                 overlaps = list(interlap.find((read_start, read_end)))
@@ -338,7 +284,7 @@ class AlignmentProcessor:
                     # Return best transcript if it meets minimum threshold
                     if best_ratio >= self.min_overlap_ratio:
                         self.stats['single_exon_assigned'] += 1
-                        return best_transcript
+                        return best_transcript, strand
                 
                 self.stats['single_exon_no_overlap'] += 1
         
@@ -354,7 +300,6 @@ class AlignmentProcessor:
         logger.info(f"  Unassigned reads: {self.stats['unassigned_reads']}")
         logger.info(f"  Filtered reads:")
         logger.info(f"    Low MAPQ: {self.stats['low_mapq']}")
-        logger.info(f"    Large clips (>100bp): {self.stats['large_clips_filtered']}")
 
 
 if __name__ == "__main__":

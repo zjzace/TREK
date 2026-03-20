@@ -53,7 +53,7 @@ class TESAnalyzer:
                  min_distance: int = 50,
                  min_relative_dominance: float = 0.1,
                  min_sharpness: float = 0.5,
-                 max_subsample: int = 50_000,
+                 max_subsample: int = 50000,
                  random_seed: int = 42):
         """
         Initialize TES analyzer

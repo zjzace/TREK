@@ -220,14 +220,14 @@ class GTFProcessor:
         }
     
     def organize_transcripts(self, transcripts: Dict[str, Transcript]) -> Tuple[
-        Dict[Tuple[str, str], Dict[Tuple[int, ...], Tuple[str, int, int]]],  # multi_exon_dict
-        Dict[Tuple[str, str], InterLap]                                        # single_exon_dict
+        Dict[str, Dict[Tuple[int, ...], Tuple[str, int, int, str]]],  # multi_exon_dict
+        Dict[Tuple[str, str], InterLap]                           # single_exon_dict
     ]:
         """
         Organize transcripts for efficient read assignment
         
         Returns:
-            - multi_exon_dict: Nested dict mapping (chr, strand) -> sj_pattern -> (transcript_id, start, end)
+            - multi_exon_dict: Nested dict mapping chr -> sj_pattern -> (transcript_id, start, end, strand)
             - single_exon_dict: InterLap objects per (chr, strand) containing (start, end, transcript_id)
         """
         logger.info("Organizing transcripts for read assignment")
@@ -239,21 +239,22 @@ class GTFProcessor:
             chrom_strand_key = (transcript.chromosome, transcript.strand)
             
             if transcript.is_multi_exon:
-                # Map splice junction pattern to transcript (single value)
+                # Map splice junction pattern to transcript (single value), keyed by chrom only
                 sj_pattern = transcript.get_splice_junctions()
-                if sj_pattern in multi_exon_dict[chrom_strand_key]:
-                    logger.warning(f"Duplicate splice junction pattern for {transcript_id} and {multi_exon_dict[chrom_strand_key][sj_pattern][0]}")
-                multi_exon_dict[chrom_strand_key][sj_pattern] = (
+                if sj_pattern in multi_exon_dict[transcript.chromosome]:
+                    logger.warning(f"Duplicate splice junction pattern for {transcript_id} and {multi_exon_dict[transcript.chromosome][sj_pattern][0]}")
+                multi_exon_dict[transcript.chromosome][sj_pattern] = (
                     transcript_id,
                     transcript.start,
-                    transcript.end
+                    transcript.end,
+                    transcript.strand
                 )
             else:
                 # Single exon transcript - add to InterLap
                 exon = transcript.exons[0]
                 single_exon_dict[chrom_strand_key].add((exon.start, exon.end, transcript_id))
         
-        logger.info(f"Organized {sum(len(v) for v in multi_exon_dict.values())} unique splice patterns across {len(multi_exon_dict)} chrom-strand combinations")
+        logger.info(f"Organized {sum(len(v) for v in multi_exon_dict.values())} unique splice patterns across {len(multi_exon_dict)} chromosomes")
         logger.info(f"Organized {len(single_exon_dict)} InterLap objects for single-exon transcripts")
         
         return dict(multi_exon_dict), dict(single_exon_dict)
