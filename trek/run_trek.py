@@ -18,6 +18,7 @@ import pickle
 from pathlib import Path
 
 from gtf_processor import GTFProcessor
+from gff_processor import GFFProcessor
 from alignment_processor import AlignmentProcessor
 from apa_finder import TESFinder
 from internal_priming_filter import InternalPrimingFilter
@@ -112,11 +113,16 @@ class ApaFinderPipeline:
             return None
 
     def _process_gtf(self):
-        """Process GTF file"""
-        logger.info(f"Processing GTF: {self.gtf_file}")
+        """Process GTF or GFF3 file"""
+        logger.info(f"Processing annotation: {self.gtf_file}")
         
-        processor = GTFProcessor()
-        transcripts = processor.parse_gtf(self.gtf_file)
+        ext = Path(self.gtf_file).suffix.lower()
+        if ext in ('.gff', '.gff3'):
+            processor = GFFProcessor()
+            transcripts = processor.parse_gff(self.gtf_file)
+        else:
+            processor = GTFProcessor()
+            transcripts = processor.parse_gtf(self.gtf_file)
         
         logger.info(f"Parsed {len(transcripts)} transcripts")
         
@@ -252,7 +258,7 @@ def parse_arguments():
     
     # Required arguments
     parser.add_argument('-g', '--gtf', required=True, 
-                       help='Reference GTF file')
+                       help='Reference annotation file (GTF, GFF, or GFF3)')
     parser.add_argument('-f', '--fasta', required=True, 
                        help='Genome FASTA file')
     parser.add_argument('-q', '--fastq', nargs='+', required=True, 
@@ -310,7 +316,7 @@ def main():
     try:
         # Validate inputs
         if not Path(args.gtf).exists():
-            raise FileNotFoundError(f"GTF file not found: {args.gtf}")
+            raise FileNotFoundError(f"Annotation file not found: {args.gtf}")
         if not Path(args.fasta).exists():
             raise FileNotFoundError(f"FASTA file not found: {args.fasta}")
         for fq in args.fastq:
