@@ -158,64 +158,80 @@ class AlignmentProcessor:
             desc: Label for the tqdm progress bar
             transcript_reads: Shared dict that results are written into
         """
-        cmd = ['minimap2', '-ax', preset, '-t', str(threads)] + extra_args + ['--secondary=no']
+        base_cmd = ['minimap2', '-ax', preset, '-t', str(threads)] + extra_args + ['--secondary=no']
         
         if bed_file:
-            cmd.extend(['--junc-bed', bed_file])
+            base_cmd.extend(['--junc-bed', bed_file])
             logger.info(f"Using junction guide from: {bed_file}")
         
-        cmd.append(genome_fasta)
-        cmd.extend(fastq_files)
+        base_cmd.append(genome_fasta)
         
-        logger.info(f"Command: {' '.join(cmd)}")
-        
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,  # Binary mode for pysam
-        )
-        
-        with pysam.AlignmentFile(process.stdout, 'r') as sam:
-            for read in tqdm(sam, desc=desc):
-                # Filter by mapping quality
-                if read.mapping_quality < self.min_mapq:
-                    self.stats['low_mapq'] += 1
-                    continue
+        # Process each FASTQ file independently so one truncated file
+        # doesn't abort the entire batch
+        for file_idx, fastq_file in enumerate(fastq_files, 1):
+            cmd = base_cmd + [fastq_file]
+            file_desc = f"{desc} [{file_idx}/{len(fastq_files)}] {fastq_file}"
+            logger.info(f"Command: {' '.join(cmd)}")
+            
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=False,  # Binary mode for pysam
+                )
                 
-                # Skip unmapped, secondary, supplementary
-                if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    self.stats['filtered_alignments'] += 1
-                    continue
+                with pysam.AlignmentFile(process.stdout, 'r') as sam:
+                  try:
+                    for read in tqdm(sam, desc=file_desc):
+                        # Filter by mapping quality
+                        if read.mapping_quality < self.min_mapq:
+                            self.stats['low_mapq'] += 1
+                            continue
+                        
+                        # Skip unmapped, secondary, supplementary
+                        if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                            self.stats['filtered_alignments'] += 1
+                            continue
+                        
+                        self.stats['total_reads_processed'] += 1
+                        
+                        chrom = read.reference_name
+                        ref_start = read.reference_start   # 0-based
+                        ref_end = read.reference_end         # 0-based
+                        strand = '-' if read.is_reverse else '+'
+                        
+                        junctions = _extract_junctions(read.cigartuples, ref_start)
+                        assigned = self._assign_read(chrom, strand, ref_start, ref_end, junctions)
+                        
+                        if not assigned:
+                            self.stats['unassigned_reads'] += 1
+                            continue
+                        
+                        assigned_transcript, transcript_strand = assigned
+                        
+                        # Determine 3' end position (1-based) based on transcript strand
+                        if transcript_strand == '+':
+                            read_end = ref_end
+                        else:
+                            read_end = ref_start + 1
+                        
+                        transcript_reads[assigned_transcript].append(read_end)
+                        self.stats['assigned_reads'] += 1
+                  except (StopIteration, IOError, OSError) as e:
+                    logger.warning(f"SAM stream interrupted for {fastq_file} "
+                                   f"(truncated file?): {e}. "
+                                   f"Reads processed so far from this file are kept.")
                 
-                self.stats['total_reads_processed'] += 1
-                
-                chrom = read.reference_name
-                ref_start = read.reference_start   # 0-based
-                ref_end = read.reference_end         # 0-based
-                strand = '-' if read.is_reverse else '+'
-                
-                junctions = _extract_junctions(read.cigartuples, ref_start)
-                assigned = self._assign_read(chrom, strand, ref_start, ref_end, junctions)
-                
-                if not assigned:
-                    self.stats['unassigned_reads'] += 1
-                    continue
-                
-                assigned_transcript, transcript_strand = assigned
-                
-                # Determine 3' end position (1-based) based on transcript strand
-                if transcript_strand == '+':
-                    read_end = ref_end
-                else:
-                    read_end = ref_start + 1
-                
-                transcript_reads[assigned_transcript].append(read_end)
-                self.stats['assigned_reads'] += 1
-        
-        _, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"minimap2 failed: {stderr.decode()}")
+                _, stderr = process.communicate()
+                if process.returncode != 0:
+                    logger.warning(f"minimap2 returned non-zero exit for {fastq_file}: "
+                                   f"{stderr.decode().strip()}. Continuing with next file.")
+                    self.stats['failed_files'] += 1
+            
+            except Exception as e:
+                logger.warning(f"Failed to process {fastq_file}: {e}. Skipping.")
+                self.stats['failed_files'] += 1
 
     def _assign_read(self, chrom: str, strand: str,
                      ref_start: int, ref_end: int,
