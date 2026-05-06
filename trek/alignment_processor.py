@@ -3,6 +3,7 @@
 Alignment Processor: Handle minimap2 alignment and read-to-transcript assignment
 """
 
+import os
 import subprocess
 import logging
 import pysam
@@ -47,6 +48,22 @@ def _extract_junctions(cigartuples, ref_start: int) -> Optional[Tuple[int, ...]]
     return tuple(junctions) if junctions else None
 
 
+_4GB = 4 * 1024 ** 3  # 4 GiB in bytes
+
+
+def _get_genome_size(fasta_path: str) -> int:
+    """
+    Return the total genome size in bytes by summing sequence lengths in a FASTA file.
+    Only sequence characters (non-header lines) are counted.
+    """
+    total = 0
+    with open(fasta_path, 'r') as fh:
+        for line in fh:
+            if not line.startswith('>'):
+                total += len(line.rstrip('\n\r'))
+    return total
+
+
 class AlignmentProcessor:
     """Process alignments and assign reads to transcripts"""
     
@@ -89,12 +106,24 @@ class AlignmentProcessor:
         Returns:
             Dictionary mapping transcript_id to list of read_end_positions
         """
+        # Detect genome size and add --split-prefix for large genomes (>4 GB)
+        genome_size = _get_genome_size(genome_fasta)
+        split_args: List[str] = []
+        if genome_size > _4GB:
+            split_args = ['--split-prefix=tmp']
+            logger.info(
+                f"Genome size {genome_size / 1024**3:.2f} GiB > 4 GiB: "
+                "adding --split-prefix=tmp to minimap2"
+            )
+        else:
+            logger.info(f"Genome size {genome_size / 1024**3:.2f} GiB: no split-prefix needed")
+
         # Split input files by platform
         pacbio_files = [f for f in fastq_files if 'pacbio' in f.lower() or 'subread' in f.lower()]
         nanopore_files = [f for f in fastq_files if 'pacbio' not in f.lower() and 'subread' not in f.lower()]
-        
+
         logger.info(f"Input files — Nanopore: {len(nanopore_files)}, PacBio: {len(pacbio_files)}")
-        
+
         transcript_reads: Dict[str, list] = defaultdict(list)
         
         if nanopore_files:
@@ -105,11 +134,11 @@ class AlignmentProcessor:
                 bed_file=bed_file,
                 threads=threads,
                 preset='splice',
-                extra_args=['-u', 'b', '-k', '14', '-G', '500000'],
+                extra_args=['-u', 'b', '-k', '14', '-G', '500000'] + split_args,
                 desc="Processing Nanopore reads",
                 transcript_reads=transcript_reads,
             )
-        
+
         if pacbio_files:
             logger.info(f"Running minimap2 for PacBio reads ({len(pacbio_files)} file(s))")
             self._run_minimap2(
@@ -118,7 +147,7 @@ class AlignmentProcessor:
                 bed_file=bed_file,
                 threads=threads,
                 preset='splice:hq',
-                extra_args=['-u', 'f', '-G', '500000'],
+                extra_args=['-u', 'f', '-G', '500000'] + split_args,
                 desc="Processing PacBio reads",
                 transcript_reads=transcript_reads,
             )
