@@ -211,46 +211,45 @@ class AlignmentProcessor:
                 )
                 
                 with pysam.AlignmentFile(process.stdout, 'r') as sam:
-                  try:
                     for read in tqdm(sam, desc=file_desc):
-                        # Filter by mapping quality
-                        if read.mapping_quality < self.min_mapq:
-                            self.stats['low_mapq'] += 1
-                            continue
-                        
-                        # Skip unmapped, secondary, supplementary
-                        if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                            self.stats['filtered_alignments'] += 1
-                            continue
-                        
-                        self.stats['total_reads_processed'] += 1
-                        
-                        chrom = read.reference_name
-                        ref_start = read.reference_start   # 0-based
-                        ref_end = read.reference_end         # 0-based
-                        strand = '-' if read.is_reverse else '+'
-                        
-                        junctions = _extract_junctions(read.cigartuples, ref_start)
-                        assigned = self._assign_read(chrom, strand, ref_start, ref_end, junctions)
-                        
-                        if not assigned:
-                            self.stats['unassigned_reads'] += 1
-                            continue
-                        
-                        assigned_transcript, transcript_strand = assigned
-                        
-                        # Determine 3' end position (1-based) based on transcript strand
-                        if transcript_strand == '+':
-                            read_end = ref_end
-                        else:
-                            read_end = ref_start + 1
-                        
-                        transcript_reads[assigned_transcript].append(read_end)
-                        self.stats['assigned_reads'] += 1
-                  except (StopIteration, IOError, OSError) as e:
-                    logger.warning(f"SAM stream interrupted for {fastq_file} "
-                                   f"(truncated file?): {e}. "
-                                   f"Reads processed so far from this file are kept.")
+                        try:
+                            # Filter by mapping quality
+                            if read.mapping_quality < self.min_mapq:
+                                self.stats['low_mapq'] += 1
+                                continue
+                            
+                            # Skip unmapped, secondary, supplementary
+                            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                                self.stats['filtered_alignments'] += 1
+                                continue
+                            
+                            self.stats['total_reads_processed'] += 1
+                            
+                            chrom = read.reference_name
+                            ref_start = read.reference_start   # 0-based
+                            ref_end = read.reference_end         # 0-based
+                            strand = '-' if read.is_reverse else '+'
+                            
+                            junctions = _extract_junctions(read.cigartuples, ref_start)
+                            assigned = self._assign_read(chrom, strand, ref_start, ref_end, junctions)
+                            
+                            if not assigned:
+                                self.stats['unassigned_reads'] += 1
+                                continue
+                            
+                            assigned_transcript, transcript_strand = assigned
+                            
+                            # Determine 3' end position (1-based) based on transcript strand
+                            if transcript_strand == '+':
+                                read_end = ref_end
+                            else:
+                                read_end = ref_start + 1
+                            
+                            transcript_reads[assigned_transcript].append(read_end)
+                            self.stats['assigned_reads'] += 1
+                        except (IOError, OSError) as e:
+                            logger.warning(f"Skipping malformed read in {fastq_file}: {e}")
+                            self.stats['skipped_reads'] += 1
                 
                 _, stderr = process.communicate()
                 if process.returncode != 0:
@@ -345,6 +344,7 @@ class AlignmentProcessor:
         logger.info(f"  Unassigned reads: {self.stats['unassigned_reads']}")
         logger.info(f"  Filtered reads:")
         logger.info(f"    Low MAPQ: {self.stats['low_mapq']}")
+        logger.info(f"    Skipped (malformed): {self.stats['skipped_reads']}")
 
 
 if __name__ == "__main__":
