@@ -106,17 +106,20 @@ class AlignmentProcessor:
         Returns:
             Dictionary mapping transcript_id to list of read_end_positions
         """
-        # Detect genome size and add --split-prefix for large genomes (>4 GB)
+        # Detect genome size; for large genomes set -I larger than the genome
+        # so minimap2 indexes the entire reference in one chunk (single pass over reads).
+        # This is faster than --split-prefix which forces multiple alignment passes.
         genome_size = _get_genome_size(genome_fasta)
         split_args: List[str] = []
         if genome_size > _4GB:
-            split_args = ['--split-prefix=tmp']
+            index_size_gb = int(genome_size / 1024 ** 3) + 4  # genome size + 4 GiB headroom
+            split_args = ['-I', f'{index_size_gb}g']
             logger.info(
                 f"Genome size {genome_size / 1024**3:.2f} GiB > 4 GiB: "
-                "adding --split-prefix=tmp to minimap2"
+                f"adding -I{index_size_gb}g to minimap2 to avoid index splitting"
             )
         else:
-            logger.info(f"Genome size {genome_size / 1024**3:.2f} GiB: no split-prefix needed")
+            logger.info(f"Genome size {genome_size / 1024**3:.2f} GiB: default -I is sufficient")
 
         # Split input files by platform
         pacbio_files = [f for f in fastq_files if 'pacbio' in f.lower() or 'subread' in f.lower()]
