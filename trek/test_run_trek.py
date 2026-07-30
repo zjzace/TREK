@@ -1,11 +1,32 @@
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch
 
+import run_trek
 from run_trek import ApaFinderPipeline
 
 
 class ApaFinderPipelineTest(unittest.TestCase):
+    def test_no_filter_priming_flag_disables_pipeline_filter(self):
+        argv = [
+            "trek",
+            "-g", "annotation.gtf",
+            "-f", "genome.fa",
+            "-q", "reads.fastq",
+            "--no-filter-priming",
+        ]
+
+        with patch.object(sys, "argv", argv), \
+             patch.object(run_trek.Path, "exists", return_value=True), \
+             patch.object(run_trek, "ApaFinderPipeline") as pipeline_class:
+            result = run_trek.main()
+
+        self.assertEqual(result, 0)
+        self.assertFalse(pipeline_class.call_args.kwargs["filter_priming"])
+        pipeline_class.return_value.run.assert_called_once_with()
+
     def test_run_skips_internal_priming_filter_when_disabled(self):
         transcripts = {"transcript": object()}
         raw_results = {"transcript": object()}

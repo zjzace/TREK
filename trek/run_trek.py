@@ -305,6 +305,8 @@ def parse_arguments():
                        help='Downstream transcript-direction window size for A-content check (default: 20)')
     parser.add_argument('--priming-a-threshold', type=float, default=0.5,
                        help='Maximum A-content threshold (default: 0.5)')
+    parser.add_argument('--no-filter-priming', action='store_true',
+                       help='Disable internal priming filtering (enabled by default)')
     
     # Reproducibility arguments
     parser.add_argument('--serial', action='store_true',
@@ -346,6 +348,7 @@ def main():
             n_jobs=1 if args.serial else args.jobs,
             priming_window=args.priming_window,
             priming_a_threshold=args.priming_a_threshold,
+            filter_priming=not args.no_filter_priming,
             random_seed=42
         )
         pipeline.run()
