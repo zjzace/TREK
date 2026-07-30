@@ -147,15 +147,17 @@ class ApaFinderPipelineTest(unittest.TestCase):
             pipeline._find_apa_sites = Mock(return_value=raw_results)
             pipeline._filter_internal_priming = Mock(return_value=filtered_results)
             pipeline._write_results = Mock()
-            pipeline._write_removed_apa_results = Mock()
 
             pipeline.run()
 
             pipeline._filter_internal_priming.assert_not_called()
             pipeline._write_results.assert_called_once_with(raw_results, transcripts)
-            pipeline._write_removed_apa_results.assert_called_once_with(
-                {}, transcripts
-            )
+            removed_output = (
+                run_trek.Path(output_dir)
+                / "polyA.internal_priming_removed.txt"
+            ).read_text().splitlines()
+            self.assertEqual(len(removed_output), 1)
+            self.assertTrue(removed_output[0].endswith("\ta_content"))
 
     def test_run_filters_internal_priming_by_default(self):
         transcripts = {"transcript": object()}
