@@ -87,15 +87,19 @@ class ApaFinderPipeline:
             
             logger.info("STEP 4: Identifying alternative polyA sites")
             apa_results = self._find_apa_sites(transcript_reads)
-            
+
+            removed_apa = {}
             if self.filter_priming:
                 logger.info("STEP 5: Filtering internal priming artifacts")
-                apa_results = self._filter_internal_priming(apa_results, transcripts)
+                apa_results, removed_apa = self._filter_internal_priming(
+                    apa_results, transcripts
+                )
             else:
                 logger.info("STEP 5: Internal priming filtering disabled; skipping")
             
             logger.info("STEP 6: Writing results")
             self._write_results(apa_results, transcripts)
+            self._write_removed_apa_results(removed_apa, transcripts)
             
             logger.info("Pipeline completed successfully!")
             

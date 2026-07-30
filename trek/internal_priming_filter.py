@@ -6,7 +6,7 @@ by checking A-rich sequences around the polyA site
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from Bio import SeqIO
 from apa_finder import TranscriptAPA
 from gtf_processor import Transcript
@@ -48,9 +48,11 @@ class InternalPrimingFilter:
         self.genome_seqs = SeqIO.to_dict(SeqIO.parse(genome_fasta, "fasta"))
         logger.info(f"Loaded {len(self.genome_seqs)} chromosomes")
     
-    def filter_apa_results(self,
-                          apa_results: Dict[str, TranscriptAPA],
-                          transcripts: Dict[str, Transcript]) -> Dict[str, TranscriptAPA]:
+    def filter_apa_results(
+        self,
+        apa_results: Dict[str, TranscriptAPA],
+        transcripts: Dict[str, Transcript],
+    ) -> Tuple[Dict[str, TranscriptAPA], Dict[str, RemovedAPA]]:
         """
         Filter APA results to remove sites with internal priming
         
@@ -59,11 +61,12 @@ class InternalPrimingFilter:
             transcripts: Dictionary of transcript_id -> Transcript
             
         Returns:
-            Filtered dictionary of transcript_id -> TranscriptAPA
+            Tuple of filtered and removed APA dictionaries
         """
         logger.info("Filtering APA sites for internal priming")
         
         filtered_results = {}
+        removed_results = {}
         total_sites_before = 0
         total_sites_after = 0
         transcripts_with_multiple_before = 0
@@ -87,8 +90,12 @@ class InternalPrimingFilter:
                 transcripts_with_multiple_before += 1
                 
                 # Filter sites
-                filtered_apa = self._filter_transcript_apa(apa, transcript)
+                filtered_apa, removed_apa = self._filter_transcript_apa(
+                    apa, transcript
+                )
                 filtered_results[transcript_id] = filtered_apa
+                if removed_apa.site:
+                    removed_results[transcript_id] = removed_apa
                 
                 total_sites_after += len(filtered_apa.site)
                 sites_removed += (len(apa.site) - len(filtered_apa.site))
@@ -103,11 +110,13 @@ class InternalPrimingFilter:
         logger.info(f"  Transcripts with multiple sites before: {transcripts_with_multiple_before}")
         logger.info(f"  Transcripts with multiple sites after: {transcripts_with_multiple_after}")
         
-        return filtered_results
+        return filtered_results, removed_results
     
-    def _filter_transcript_apa(self,
-                               apa: TranscriptAPA,
-                               transcript: Transcript) -> TranscriptAPA:
+    def _filter_transcript_apa(
+        self,
+        apa: TranscriptAPA,
+        transcript: Transcript,
+    ) -> Tuple[TranscriptAPA, RemovedAPA]:
         """
         Filter APA sites for a single transcript
         Only filters non-dominant sites; the dominant site (highest abundance) is always kept.
@@ -117,11 +126,13 @@ class InternalPrimingFilter:
             transcript: Transcript object
             
         Returns:
-            Filtered TranscriptAPA object
+            Tuple of filtered and removed APA objects
         """
         # Keep track of which sites to keep
         # Always keep the dominant site (index 0)
         keep_indices = [0]
+        removed_indices = []
+        removed_a_content = []
         
         # Only check non-dominant sites (index >= 1)
         for idx in range(1, len(apa.site)):
@@ -140,6 +151,8 @@ class InternalPrimingFilter:
                 logger.debug(f"Keeping non-dominant site at {position} in {transcript.transcript_id} "
                            f"(A proportion: {a_proportion:.2%})")
             else:
+                removed_indices.append(idx)
+                removed_a_content.append(a_proportion)
                 logger.debug(f"Removing non-dominant site at {position} in {transcript.transcript_id} "
                            f"(A proportion: {a_proportion:.2%})")
         
@@ -151,10 +164,18 @@ class InternalPrimingFilter:
         total_count = sum(filtered_counts)
         filtered_abundances = [count / total_count for count in filtered_counts]
         
-        return TranscriptAPA(
-            site=filtered_sites,
-            count=filtered_counts,
-            abundance=filtered_abundances
+        return (
+            TranscriptAPA(
+                site=filtered_sites,
+                count=filtered_counts,
+                abundance=filtered_abundances
+            ),
+            RemovedAPA(
+                site=[apa.site[i] for i in removed_indices],
+                count=[apa.count[i] for i in removed_indices],
+                abundance=[apa.abundance[i] for i in removed_indices],
+                a_content=removed_a_content
+            )
         )
     
     def _calculate_a_content(self,

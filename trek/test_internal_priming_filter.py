@@ -94,7 +94,7 @@ class InternalPrimingFilterTest(unittest.TestCase):
         filter_obj = self._filter_for_sequence(sequence)
         filter_obj.a_content_threshold = 0.5
 
-        filtered = filter_obj._filter_transcript_apa(
+        filtered, removed = filter_obj._filter_transcript_apa(
             TranscriptAPA(
                 site=[31, self.position],
                 count=[20, 10],
@@ -108,6 +108,7 @@ class InternalPrimingFilterTest(unittest.TestCase):
         )
 
         self.assertEqual(filtered.site, [31, self.position])
+        self.assertEqual(removed.site, [])
 
     def test_secondary_site_above_half_a_content_is_removed(self):
         sequence = list("C" * 120)
@@ -115,7 +116,7 @@ class InternalPrimingFilterTest(unittest.TestCase):
         filter_obj = self._filter_for_sequence(sequence)
         filter_obj.a_content_threshold = 0.5
 
-        filtered = filter_obj._filter_transcript_apa(
+        filtered, removed = filter_obj._filter_transcript_apa(
             TranscriptAPA(
                 site=[31, self.position],
                 count=[20, 10],
@@ -129,6 +130,58 @@ class InternalPrimingFilterTest(unittest.TestCase):
         )
 
         self.assertEqual(filtered.site, [31])
+        self.assertEqual(removed.site, [self.position])
+
+    def test_filter_returns_removed_site_with_original_values(self):
+        sequence = list("C" * 120)
+        sequence[self.position:self.position + 11] = "A" * 11
+        filter_obj = self._filter_for_sequence(sequence)
+        filter_obj.a_content_threshold = 0.5
+        apa = TranscriptAPA(
+            site=[31, self.position],
+            count=[20, 10],
+            abundance=[2 / 3, 1 / 3],
+        )
+        transcript = SimpleNamespace(
+            chromosome=self.chromosome,
+            strand="+",
+            transcript_id="tx1",
+        )
+
+        filtered, removed = filter_obj.filter_apa_results(
+            {"tx1": apa}, {"tx1": transcript}
+        )
+
+        self.assertEqual(filtered["tx1"].site, [31])
+        self.assertEqual(filtered["tx1"].abundance, [1.0])
+        self.assertEqual(removed["tx1"].site, [self.position])
+        self.assertEqual(removed["tx1"].count, [10])
+        self.assertEqual(removed["tx1"].abundance, [1 / 3])
+        self.assertEqual(removed["tx1"].a_content, [0.55])
+
+    def test_minus_strand_removed_site_records_t_as_a_content(self):
+        sequence = list("C" * 120)
+        sequence[
+            self.position - self.window_size - 1:self.position - 10
+        ] = "T" * 11
+        filter_obj = self._filter_for_sequence(sequence)
+        filter_obj.a_content_threshold = 0.5
+
+        _, removed = filter_obj._filter_transcript_apa(
+            TranscriptAPA(
+                site=[91, self.position],
+                count=[20, 10],
+                abundance=[2 / 3, 1 / 3],
+            ),
+            SimpleNamespace(
+                chromosome=self.chromosome,
+                strand="-",
+                transcript_id="tx1",
+            ),
+        )
+
+        self.assertEqual(removed.site, [self.position])
+        self.assertEqual(removed.a_content, [0.55])
 
 
 if __name__ == "__main__":

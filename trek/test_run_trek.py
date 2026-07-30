@@ -107,16 +107,21 @@ class ApaFinderPipelineTest(unittest.TestCase):
             pipeline._find_apa_sites = Mock(return_value=raw_results)
             pipeline._filter_internal_priming = Mock(return_value=filtered_results)
             pipeline._write_results = Mock()
+            pipeline._write_removed_apa_results = Mock()
 
             pipeline.run()
 
             pipeline._filter_internal_priming.assert_not_called()
             pipeline._write_results.assert_called_once_with(raw_results, transcripts)
+            pipeline._write_removed_apa_results.assert_called_once_with(
+                {}, transcripts
+            )
 
     def test_run_filters_internal_priming_by_default(self):
         transcripts = {"transcript": object()}
         raw_results = {"transcript": object()}
         filtered_results = {"transcript": object()}
+        removed_results = {"transcript": object()}
 
         with tempfile.TemporaryDirectory() as output_dir:
             pipeline = ApaFinderPipeline(
@@ -128,8 +133,11 @@ class ApaFinderPipelineTest(unittest.TestCase):
             pipeline._process_gtf = Mock(return_value=(transcripts, {}, {}))
             pipeline._load_assignments_if_valid = Mock(return_value={})
             pipeline._find_apa_sites = Mock(return_value=raw_results)
-            pipeline._filter_internal_priming = Mock(return_value=filtered_results)
+            pipeline._filter_internal_priming = Mock(
+                return_value=(filtered_results, removed_results)
+            )
             pipeline._write_results = Mock()
+            pipeline._write_removed_apa_results = Mock()
 
             pipeline.run()
 
@@ -137,6 +145,9 @@ class ApaFinderPipelineTest(unittest.TestCase):
                 raw_results, transcripts
             )
             pipeline._write_results.assert_called_once_with(filtered_results, transcripts)
+            pipeline._write_removed_apa_results.assert_called_once_with(
+                removed_results, transcripts
+            )
 
 
 if __name__ == "__main__":
