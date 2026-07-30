@@ -203,6 +203,38 @@ class ApaFinderPipeline:
         )
         
         return filter_obj.filter_apa_results(apa_results, transcripts)
+
+    def _write_removed_apa_results(self, removed_apa, transcripts):
+        """Write APA sites removed by the internal priming filter."""
+        output_file = self.output_dir / f"{self.prefix}.internal_priming_removed.txt"
+
+        with open(output_file, 'w') as f:
+            f.write(
+                "transcript_id\tgene_id\tgene_name\tchromosome\tstrand\t"
+                "ID\tsite_position\tsite_count\tsite_abundance\t"
+                "transcript_biotype\ta_content\n"
+            )
+
+            for transcript_id, apa in removed_apa.items():
+                transcript = transcripts.get(transcript_id)
+                if not transcript:
+                    continue
+
+                for position, count, abundance, a_content in zip(
+                    apa.site, apa.count, apa.abundance, apa.a_content
+                ):
+                    locus_id = (
+                        f"{transcript.chromosome}:{position}:{transcript.strand}"
+                    )
+                    f.write(
+                        f"{transcript_id}\t{transcript.ncbi_gene_id}\t"
+                        f"{transcript.gene_name}\t{transcript.chromosome}\t"
+                        f"{transcript.strand}\t{locus_id}\t{position}\t{count}\t"
+                        f"{abundance:.4f}\t{transcript.transcript_biotype}\t"
+                        f"{a_content:.4f}\n"
+                    )
+
+        logger.info(f"Saved removed internal priming sites: {output_file}")
     
     def _write_results(self, apa_results, transcripts):
         """Write results to output files"""

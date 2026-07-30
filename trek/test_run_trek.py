@@ -1,14 +1,76 @@
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import run_trek
+from internal_priming_filter import RemovedAPA
 from run_trek import ApaFinderPipeline
 
 
 class ApaFinderPipelineTest(unittest.TestCase):
+    def test_write_removed_internal_priming_results(self):
+        transcript = SimpleNamespace(
+            ncbi_gene_id="gene1",
+            gene_name="GENE1",
+            chromosome="chr1",
+            strand="+",
+            transcript_biotype="protein_coding",
+        )
+        removed_apa = {
+            "tx1": RemovedAPA(
+                site=[61],
+                count=[10],
+                abundance=[1 / 3],
+                a_content=[0.55],
+            )
+        }
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            pipeline = ApaFinderPipeline(
+                gtf_file="annotation.gtf",
+                genome_fasta="genome.fa",
+                fastq_files=[],
+                output_dir=output_dir,
+                prefix="sample",
+            )
+            pipeline._write_removed_apa_results(removed_apa, {"tx1": transcript})
+
+            output = (
+                run_trek.Path(output_dir)
+                / "sample.internal_priming_removed.txt"
+            ).read_text()
+
+        self.assertEqual(
+            output,
+            "transcript_id\tgene_id\tgene_name\tchromosome\tstrand\tID\t"
+            "site_position\tsite_count\tsite_abundance\ttranscript_biotype\t"
+            "a_content\n"
+            "tx1\tgene1\tGENE1\tchr1\t+\tchr1:61:+\t61\t10\t0.3333\t"
+            "protein_coding\t0.5500\n",
+        )
+
+    def test_write_empty_removed_internal_priming_results(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            pipeline = ApaFinderPipeline(
+                gtf_file="annotation.gtf",
+                genome_fasta="genome.fa",
+                fastq_files=[],
+                output_dir=output_dir,
+                prefix="sample",
+            )
+            pipeline._write_removed_apa_results({}, {})
+
+            lines = (
+                run_trek.Path(output_dir)
+                / "sample.internal_priming_removed.txt"
+            ).read_text().splitlines()
+
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith("\ta_content"))
+
     def test_no_filter_priming_flag_disables_pipeline_filter(self):
         argv = [
             "trek",

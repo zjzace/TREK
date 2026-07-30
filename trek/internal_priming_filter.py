@@ -5,12 +5,23 @@ by checking A-rich sequences around the polyA site
 """
 
 import logging
-from typing import Dict
+from dataclasses import dataclass
+from typing import Dict, List
 from Bio import SeqIO
 from apa_finder import TranscriptAPA
 from gtf_processor import Transcript
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RemovedAPA:
+    """APA sites removed as internal priming artifacts."""
+
+    site: List[int]
+    count: List[int]
+    abundance: List[float]
+    a_content: List[float]
 
 
 class InternalPrimingFilter:
