@@ -18,14 +18,14 @@ class InternalPrimingFilter:
     
     def __init__(self, 
                  genome_fasta: str,
-                 window_size: int = 10,
+                 window_size: int = 20,
                  a_content_threshold: float = 0.5):
         """
         Initialize internal priming filter
         
         Args:
             genome_fasta: Path to genome FASTA file
-            window_size: Size of upstream window to check (bp)
+            window_size: Size of downstream transcript-direction window to check (bp)
             a_content_threshold: Maximum allowed A content (0-1)
         """
         self.genome_fasta = genome_fasta
@@ -151,7 +151,7 @@ class InternalPrimingFilter:
                             position: int,
                             strand: str) -> float:
         """
-        Calculate A proportion in upstream window of APA site
+        Calculate A proportion downstream of an APA site in transcript direction
         
         Args:
             chromosome: Chromosome name
@@ -168,22 +168,19 @@ class InternalPrimingFilter:
         
         chr_seq = self.genome_seqs[chromosome].seq
         
-        # Calculate upstream window coordinates
+        # Calculate downstream transcript-direction window coordinates.
         # Position is 1-based, convert to 0-based for sequence extraction
         if strand == '+':
-            # For + strand: upstream means lower genomic coordinates
-            # Extract window_size bp immediately upstream of the APA site
-            # [position - window_size, position - 1] in 1-based
-            # [position - window_size - 1, position - 1] in 0-based
-            start = max(0, position - self.window_size - 1)
-            end = max(0, position - 1)
-        else:
-            # For - strand: upstream in transcript direction means higher genomic coordinates
-            # Extract window_size bp immediately after the APA site
-            # [position + 1, position + window_size] in 1-based
-            # [position, position + window_size] in 0-based
+            # Extract [position + 1, position + window_size] in 1-based,
+            # equivalent to [position, position + window_size] in 0-based.
             start = position
             end = min(len(chr_seq), position + self.window_size)
+        else:
+            # For - strand, downstream in transcript direction is lower genomic
+            # coordinates: [position - window_size, position - 1] in 1-based.
+            # This is [position - window_size - 1, position - 1] in 0-based.
+            start = max(0, position - self.window_size - 1)
+            end = max(0, position - 1)
         
         # Extract sequence
         window_seq = str(chr_seq[start:end]).upper()
