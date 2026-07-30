@@ -65,18 +65,18 @@ trek -g reference.gtf \
 
 ### Internal Priming Filter Parameters
 
-TREK automatically filters out APA sites that may result from internal priming artifacts. For transcripts with multiple APA sites, the filter examines the genomic sequence immediately upstream of each **non-dominant** site and removes those with high A-content. The dominant site (highest read count) is always kept.
+TREK automatically filters out APA sites that may result from internal priming artifacts. For transcripts with multiple APA sites, the filter examines the genomic sequence immediately downstream of each **non-dominant** site in transcript direction and removes those with high A-content. The dominant site (highest read count) is always kept.
 
 - `--no-filter-priming`: Disable internal priming filter (enabled by default)
-- `--priming-window`: Upstream window size (bp) for A-content check (default: 10)
+- `--priming-window`: Downstream transcript-direction window size (bp) for A-content check (default: 20)
 - `--priming-a-threshold`: Maximum allowed A-content fraction (default: 0.5)
 
 **How it works:**
 1. For transcripts with multiple APA sites, the dominant site (highest abundance) is always kept
-2. For non-dominant sites only, extract the upstream 10bp genomic sequence before each site
-3. Calculate A proportion in the upstream window:
-   - For + strand: counts A content in upstream sequence
-   - For - strand: counts T content in downstream sequence (complement of A in transcript)
+2. For non-dominant sites only, extract the downstream 20 bp genomic sequence after each site in transcript direction
+3. Calculate A proportion in the downstream transcript-direction window:
+   - For + strand: counts A content at genomic positions `site + 1` through `site + 20`
+   - For - strand: counts T content at genomic positions `site - 20` through `site - 1` (complement of A in transcript)
 4. Remove non-dominant sites where A proportion > threshold (default 50%)
 5. Recalculate abundances based on remaining sites
 
