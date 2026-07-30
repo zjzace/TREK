@@ -38,8 +38,8 @@ class ApaFinderPipeline:
                  threads=8, min_mapq=1, min_overlap_ratio=0.2,
                  min_reads=10, min_cluster_size=10, max_clusters=5, min_distance=50,
                  min_relative_dominance=0.1, min_sharpness=0.5, n_jobs=-1,
-                priming_window=10, priming_a_threshold=0.5,
-                 random_seed=42):
+                 priming_window=20, priming_a_threshold=0.5,
+                 random_seed=42, filter_priming=True):
         """Initialize pipeline with parameters"""
         self.gtf_file = gtf_file
         self.genome_fasta = genome_fasta
@@ -58,6 +58,7 @@ class ApaFinderPipeline:
         self.n_jobs = n_jobs
         self.priming_window = priming_window
         self.priming_a_threshold = priming_a_threshold
+        self.filter_priming = filter_priming
         self.random_seed = random_seed
         
         # Create output directory
@@ -87,8 +88,11 @@ class ApaFinderPipeline:
             logger.info("STEP 4: Identifying alternative polyA sites")
             apa_results = self._find_apa_sites(transcript_reads)
             
-            logger.info("STEP 5: Filtering internal priming artifacts")
-            apa_results = self._filter_internal_priming(apa_results, transcripts)
+            if self.filter_priming:
+                logger.info("STEP 5: Filtering internal priming artifacts")
+                apa_results = self._filter_internal_priming(apa_results, transcripts)
+            else:
+                logger.info("STEP 5: Internal priming filtering disabled; skipping")
             
             logger.info("STEP 6: Writing results")
             self._write_results(apa_results, transcripts)
@@ -297,8 +301,8 @@ def parse_arguments():
                        help='Parallel jobs (default: -1, all CPUs)')
     
     # Internal priming filter arguments
-    parser.add_argument('--priming-window', type=int, default=10,
-                       help='Upstream window size for A-content check (default: 10)')
+    parser.add_argument('--priming-window', type=int, default=20,
+                       help='Downstream transcript-direction window size for A-content check (default: 20)')
     parser.add_argument('--priming-a-threshold', type=float, default=0.5,
                        help='Maximum A-content threshold (default: 0.5)')
     
