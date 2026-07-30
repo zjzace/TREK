@@ -6,11 +6,51 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 import run_trek
+from apa_finder import TranscriptAPA
 from internal_priming_filter import RemovedAPA
 from run_trek import ApaFinderPipeline
 
 
 class ApaFinderPipelineTest(unittest.TestCase):
+    def test_main_output_format_remains_unchanged(self):
+        transcript = SimpleNamespace(
+            ncbi_gene_id="gene1",
+            gene_name="GENE1",
+            chromosome="chr1",
+            strand="+",
+            transcript_biotype="protein_coding",
+        )
+        apa_results = {
+            "tx1": TranscriptAPA(site=[31], count=[20], abundance=[1.0])
+        }
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            pipeline = ApaFinderPipeline(
+                gtf_file="annotation.gtf",
+                genome_fasta="genome.fa",
+                fastq_files=[],
+                output_dir=output_dir,
+                prefix="sample",
+            )
+            pipeline._write_results(apa_results, {"tx1": transcript})
+
+            main_output = (
+                run_trek.Path(output_dir) / "sample.apa_sites.txt"
+            ).read_text()
+            summary = (
+                run_trek.Path(output_dir) / "sample.summary.txt"
+            ).read_text()
+
+        self.assertEqual(
+            main_output,
+            "transcript_id\tgene_id\tgene_name\tchromosome\tstrand\tID\t"
+            "site_position\tsite_count\tsite_abundance\ttranscript_biotype\n"
+            "tx1\tgene1\tGENE1\tchr1\t+\tchr1:31:+\t31\t20\t1.0000\t"
+            "protein_coding\n",
+        )
+        self.assertIn("Total transcripts analyzed: 1", summary)
+        self.assertIn("Transcripts with alternative TES: 0", summary)
+
     def test_write_removed_internal_priming_results(self):
         transcript = SimpleNamespace(
             ncbi_gene_id="gene1",

@@ -83,6 +83,9 @@ TREK automatically filters out APA sites that may result from internal priming a
 ## Output Files
 
 - `{prefix}.apa_sites.txt`: Main results with identified APA sites
+- `{prefix}.internal_priming_removed.txt`: APA sites removed as internal
+  priming artifacts, including downstream-window A-content. Contains only its
+  header when filtering is disabled or no sites exceed the threshold.
 - `{prefix}.summary.txt`: Summary statistics
 - `{prefix}.read_assignments.pkl`: Read assignments (pickle format)
 - `{prefix}.junctions.bed`: Junction guide for alignment
